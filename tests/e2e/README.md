@@ -74,7 +74,7 @@ cd /path/to/railway-cli
 ./tests/e2e/run.sh
 ```
 
-### Using direnv (recommended)
+### Quick Setup
 
 ```bash
 cd tests/e2e

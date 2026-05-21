@@ -366,7 +366,6 @@ railway-cli/
 │   ├── dependabot.yml        # Dependency update config
 │   └── workflows/
 │       ├── pr.yml             # PR unit test workflow
-│       ├── e2e.yml            # E2E test workflow (PRs + main)
 │       ├── release.yml        # Auto pre-release + build workflow
 │       └── manual-release.yml # Manual release dispatch
 ├── cmd/railctl/              # CLI entry point

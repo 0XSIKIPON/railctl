@@ -218,15 +218,15 @@ Every `get` and `describe` command is tested with all four output formats:
 The project uses two GitHub Actions workflows:
 
 - **`pr.yml`** — Runs on every PR. Executes unit + integration tests (`make test`), linting, and build verification.
-- **`e2e.yml`** — Runs on push to `main` or when an admin comments `/run-e2e` on a PR. Decrypts Railway API tokens from a GPG-encrypted vault and runs the full E2E suite against live Railway infrastructure.
+- **E2E tests are run locally** by contributors using their own Railway API tokens. See `tests/e2e/README.md` for setup.
 
 ### When to Run Each Tier
 
 | Trigger              | Unit           | Integration    | E2E                   |
 | -------------------- | -------------- | -------------- | --------------------- |
 | Every commit (local) | ✅ `make test` | ✅ `make test` | —                     |
-| PR to main (CI)      | ✅ auto        | ✅ auto        | 🔒 `/run-e2e` (admin) |
-| Merge to main (CI)   | —              | —              | ✅ auto               |
+| PR to main (CI)      | ✅ auto        | ✅ auto        | — (run locally)       |
+| Merge to main (CI)   | —              | —              | — (run locally)       |
 | Quick sanity check   | —              | —              | ✅ `make test-smoke`  |
 
 ---

@@ -14,21 +14,17 @@ Developer pushes branch
 │   PR Opened           │
 │                       │
 │  ✅ Unit tests (auto) │
-│  ⏳ E2E tests (wait)  │
+│                       │
 │  ⏳ Review (wait)     │
 └──────────┬────────────┘
            │
      Admin reviews code
            │
      ┌─────┴──────┐
-     │ Comments    │
-     │ /run-e2e   │
      └─────┬──────┘
            │
            ▼
 ┌──────────────────────┐
-│  E2E Tests Run        │
-│  (admin team verified)│
 └──────────┬────────────┘
            │
      Admin approves PR
@@ -37,7 +33,6 @@ Developer pushes branch
 ┌──────────────────────┐
 │  All Gates Pass?      │
 │  ✅ Unit tests        │
-│  ✅ E2E tests         │
 │  ✅ 1 approval        │
 │  ✅ Conversations     │
 │     resolved          │
@@ -48,7 +43,7 @@ Developer pushes branch
            ▼
 ┌──────────────────────┐
 │  Merged to main       │
-│  E2E runs again (auto)│
+│                       │
 └──────────────────────┘
 ```
 
@@ -68,39 +63,16 @@ This requires **no human action** — it triggers on every push to any PR target
 
 | Workflow | File | What it does | Duration |
 |----------|------|-------------|----------|
-| **E2E Tests** | `.github/workflows/e2e.yml` | Full E2E suite against the live Railway API | ~10 min |
 
 This is an automatic safety net. If E2E tests fail after merge, the team is notified immediately.
 
 ---
 
-## What Requires Admin Action
+## E2E Testing
 
-### Triggering E2E Tests on a PR
+E2E tests run **locally** — they are not part of the CI pipeline. Contributors run them against the live Railway API using their own tokens before submitting PRs.
 
-E2E tests do **not** run automatically on PRs. This is a deliberate security decision — E2E tests require Railway API tokens, and those secrets must not be exposed to untrusted code.
-
-**To trigger E2E tests, an admin must:**
-
-1. Review the PR code (especially changes to `.github/`, `tests/e2e/`, and `Makefile`)
-2. Comment `/run-e2e` on the PR
-
-**What happens:**
-
-1. The workflow verifies the commenter is a member of `@kubenoops/maintainers`
-2. If verified, it reacts with 🚀 to the comment
-3. It checks out the **PR's merge commit** (not the branch directly)
-4. Decrypts Railway tokens from the encrypted vault using the CI GPG key
-5. Runs the full E2E suite
-6. Posts results as a PR comment
-
-**If a non-admin comments `/run-e2e`:**
-The workflow starts but immediately **aborts** at the team membership check. No secrets are exposed.
-
-**Security model:**
-- The `issue_comment` event always runs the workflow file from `main`, not from the PR branch
-- This means a PR author **cannot modify the security check** — the workflow code is always trusted
-- Secrets are stored in the `e2e` GitHub environment and the encrypted vault
+See [CONTRIBUTING.md](../CONTRIBUTING.md) and [tests/e2e/README.md](../tests/e2e/README.md) for setup instructions.
 
 ---
 
@@ -113,7 +85,6 @@ All of the following must pass before the "Merge" button becomes available:
 | Check | Source | Required |
 |-------|--------|----------|
 | **`test`** | `pr.yml` — unit + integration tests | ✅ Must pass |
-| **`e2e`** | `e2e.yml` — E2E tests (admin-triggered) | ✅ Must pass |
 
 Both checks must be **up-to-date** with `main` (`strict: true`). If `main` advances after the checks ran, they must re-run. This prevents merging stale branches.
 
@@ -164,23 +135,16 @@ Here's a complete example of the PR lifecycle:
    - Checks logic, test coverage, and security-sensitive files
    - Leaves comments if changes are needed
 
-4. Admin triggers E2E tests:
-   💬 /run-e2e
-
-5. E2E tests run:
-   🚀 (reaction on the comment)
-   ✅ E2E Tests (e2e) — passed
-
-6. Admin approves the PR:
+4. Admin approves the PR:
    ✅ 1/1 approvals
 
-7. All conversations resolved:
+5. All conversations resolved:
    ✅ No unresolved threads
 
-8. Merge button becomes available:
+6. Merge button becomes available:
    🟢 "Rebase and merge"
 
-9. After merge, E2E runs again on main (automatic safety net)
+7. After merge, Pre-release is auto-created
 ```
 
 ---
@@ -206,10 +170,9 @@ make test-e2e
 
 | Question | Answer |
 |----------|--------|
-| Can I merge without E2E? | No — `e2e` is a required status check |
+| Are E2E tests in CI? | No — run locally by contributors |
 | Can I skip unit tests? | No — `test` is a required status check |
-| Who can trigger E2E? | Members of `@kubenoops/maintainers` |
-| How do I trigger E2E? | Comment `/run-e2e` on the PR |
+| How do I run E2E? | Locally — see CONTRIBUTING.md |
 | Can I force push to main? | No — force pushes are disabled |
 | What merge strategy? | Rebase only (linear history enforced) |
 | Do stale approvals count? | No — new pushes dismiss prior approvals |
