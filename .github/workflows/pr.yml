@@ -1,0 +1,121 @@
+name: PR Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build
+        run: make build
+
+      - name: Run Tests
+        id: tests
+        run: |
+          set +e
+          OUTPUT=$(go test -v ./... 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          echo "$OUTPUT" > test-results.txt
+          
+          # Extract summary from go test output
+          PASSED=$(echo "$OUTPUT" | grep -c "^--- PASS:" || true)
+          FAILED=$(echo "$OUTPUT" | grep -c "^--- FAIL:" || true)
+          TOTAL=$((PASSED + FAILED))
+          
+          echo "passed=${PASSED}" >> $GITHUB_OUTPUT
+          echo "failed=${FAILED}" >> $GITHUB_OUTPUT
+          echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          exit $EXIT_CODE
+
+      - name: Create Test Results Comment
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const passed = '${{ steps.tests.outputs.passed }}';
+            const failed = '${{ steps.tests.outputs.failed }}';
+            const total = '${{ steps.tests.outputs.total }}';
+            const exitCode = '${{ steps.tests.outputs.exit_code }}';
+            
+            let output = '';
+            try {
+              output = fs.readFileSync('test-results.txt', 'utf8');
+            } catch (e) {
+              output = 'Could not read test output';
+            }
+            
+            // Truncate if too long
+            if (output.length > 60000) {
+              output = output.substring(output.length - 60000);
+            }
+            
+            const status = exitCode === '0' ? '✅ All tests passed!' : '❌ Some tests failed';
+            
+            const body = `## Test Results ${status}
+            
+            | Metric | Count |
+            |--------|-------|
+            | Total | ${total} |
+            | Passed | ${passed} |
+            | Failed | ${failed} |
+            
+            <details>
+            <summary>Test Output</summary>
+            
+            \`\`\`
+            ${output}
+            \`\`\`
+            
+            </details>`;
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && 
+              c.body.includes('## Test Results')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
