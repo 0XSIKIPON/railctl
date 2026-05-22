@@ -42,7 +42,7 @@ test:
 # Run E2E tests (requires RAILWAY_TOKEN; loads via direnv from tests/e2e/.envrc)
 test-e2e: build
 	
-	RAILCTL=$(CURDIR)/$(BINARY) go test -tags e2e -v -timeout 10m ./tests/e2e/...
+	RAILCTL=$(CURDIR)/$(BINARY) go test -tags e2e -v -timeout 20m ./tests/e2e/...
 
 # Run smoke E2E test only (~1min, full lifecycle, no permutations)
 test-smoke: build
@@ -67,7 +67,7 @@ help:
 	@echo "  install         - Install to GOPATH/bin"
 	@echo "  clean           - Remove build artifacts"
 	@echo "  test            - Run Go unit tests"
-	@echo "  test-e2e        - Build and run all E2E tests (needs RAILWAY_TOKEN, ~10min)"
+	@echo "  test-e2e        - Build and run all E2E tests (needs RAILWAY_TOKEN, ~20min)"
 	@echo "  test-smoke      - Build and run smoke E2E test (needs RAILWAY_TOKEN, ~1min)"
 	@echo "  fmt             - Format Go code"
 	@echo "  lint            - Run golangci-lint"

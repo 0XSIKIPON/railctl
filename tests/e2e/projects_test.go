@@ -57,11 +57,13 @@ func TestProjects(t *testing.T) {
 	})
 
 	t.Run("substring_resolution", func(t *testing.T) {
+		// Use the full project name minus the last 4 characters.
+		// This is unique enough to match only our project, unlike a short
+		// prefix (e.g. "e2e-177946") which can collide with concurrent test runs.
 		prefix := env.ProjectName
-		if len(prefix) > 10 {
-			prefix = prefix[:10]
+		if len(prefix) > 4 {
+			prefix = prefix[:len(prefix)-4]
 		}
 		r := env.RunOK(t, "describe", "project", prefix)
 		AssertContains(t, r.Stdout, env.ProjectName)
-	})
 }

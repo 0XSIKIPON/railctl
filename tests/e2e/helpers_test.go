@@ -21,6 +21,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	crand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -107,6 +108,35 @@ func pickToken(t *testing.T) string {
 	t.Fatal("No RAILWAY_TOKEN or RAILWAY_TOKEN_1/2/3 set")
 	return ""
 }
+// waitForProject polls `describe project` until the API confirms the project is queryable.
+// Retries up to 10 times with 2-second delays.
+func waitForProject(e *Env, name string) error {
+	for i := 0; i < 10; i++ {
+		r := e.Run("describe", "project", name)
+		if r.ExitCode == 0 {
+			e.t.Logf("Project %s confirmed queryable after %d poll(s)", name, i+1)
+			return nil
+		}
+		e.t.Logf("Waiting for project %s to propagate (attempt %d/10)...", name, i+1)
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("project %s not queryable after 10 attempts", name)
+}
+
+// waitForEnvironment polls `get environments` until the environment appears in the project.
+// Retries up to 10 times with 2-second delays.
+func waitForEnvironment(e *Env, envName string) error {
+	for i := 0; i < 10; i++ {
+		r := e.Run("get", "environments", "-p", e.ProjectName)
+		if r.ExitCode == 0 && strings.Contains(r.Stdout, envName) {
+			e.t.Logf("Environment %s confirmed queryable after %d poll(s)", envName, i+1)
+			return nil
+		}
+		e.t.Logf("Waiting for environment %s to propagate (attempt %d/10)...", envName, i+1)
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("environment %s not queryable after 10 attempts", envName)
+}
 
 // SetupProject creates a fresh project (or reuses E2E_PROJECT).
 func SetupProject(t *testing.T) *Env {
@@ -135,6 +165,11 @@ func SetupProject(t *testing.T) *Env {
 	}
 	e.hasProject = true
 
+	// Wait for Railway API propagation before proceeding
+	if err := waitForProject(e, e.ProjectName); err != nil {
+		t.Fatalf("project propagation failed: %v", err)
+	}
+
 	t.Cleanup(func() {
 		if os.Getenv("E2E_KEEP") == "1" && t.Failed() {
 			t.Logf("E2E_KEEP=1: leaving project %s for debugging", e.ProjectName)
@@ -157,6 +192,12 @@ func SetupEnvironment(t *testing.T) *Env {
 		t.Fatalf("failed to create environment %s: %s", e.EnvName, r.Stderr)
 	}
 	e.hasEnv = true
+
+	// Wait for Railway API propagation before proceeding
+	if err := waitForEnvironment(e, e.EnvName); err != nil {
+		t.Fatalf("environment propagation failed: %v", err)
+	}
+
 	t.Logf("Created environment: %s", e.EnvName)
 	return e
 }
@@ -236,9 +277,14 @@ type Result struct {
 
 // Run executes railctl with the given args. Never fails the test.
 // Automatically injects --token for the suite's assigned Railway account.
+// Each command has a 3-minute timeout to prevent a single stuck command
+// from killing the entire test suite.
 func (e *Env) Run(args ...string) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
 	fullArgs := append([]string{"--token", e.token}, args...)
-	cmd := exec.Command(railctl, fullArgs...)
+	cmd := exec.CommandContext(ctx, railctl, fullArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -246,7 +292,10 @@ func (e *Env) Run(args ...string) Result {
 
 	code := 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		if ctx.Err() == context.DeadlineExceeded {
+			code = -1
+			stderr.WriteString("\n[TIMEOUT] command exceeded 3-minute deadline")
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
 		} else {
 			code = -1
