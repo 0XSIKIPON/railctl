@@ -1,0 +1,18 @@
+service:
+  name: temporal-server
+  image: temporalio/auto-setup:1.29.5
+
+deploy:
+  restartPolicyType: ON_FAILURE
+  restartPolicyMaxRetries: 5
+
+networking:
+  tcpProxyPort: 7233
+
+variables:
+  DB: "postgres12"
+  DB_PORT: "5432"
+  POSTGRES_USER: "${{temporal-postgres.POSTGRES_USER}}"
+  POSTGRES_PWD: "${{temporal-postgres.POSTGRES_PASSWORD}}"
+  POSTGRES_SEEDS: "${{temporal-postgres.RAILWAY_PRIVATE_DOMAIN}}"
+  DYNAMIC_CONFIG_FILE_PATH: "config/dynamicconfig/docker.yaml"

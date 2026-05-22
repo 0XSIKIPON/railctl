@@ -1,0 +1,19 @@
+# Template for your own Temporal worker.
+# Replace the image with your worker built from the Temporal SDK.
+service:
+  name: temporal-worker
+  image: "$env(TEMPORAL_WORKER_IMAGE)"
+
+registry:
+  username: "$env(REGISTRY_USERNAME)"
+  password: "$env(REGISTRY_PASSWORD)"
+
+deploy:
+  numReplicas: 2
+  restartPolicyType: ON_FAILURE
+  restartPolicyMaxRetries: 10
+
+variables:
+  TEMPORAL_ADDRESS: "${{temporal-server.RAILWAY_PRIVATE_DOMAIN}}:7233"
+  TEMPORAL_NAMESPACE: "default"
+  TEMPORAL_TASK_QUEUE: "$env(TEMPORAL_TASK_QUEUE)"

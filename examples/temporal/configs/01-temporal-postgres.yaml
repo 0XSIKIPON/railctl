@@ -1,0 +1,19 @@
+service:
+  name: temporal-postgres
+  image: postgres:15
+
+deploy:
+  restartPolicyType: ON_FAILURE
+  restartPolicyMaxRetries: 5
+
+networking:
+  tcpProxyPort: 5432
+
+volume:
+  mountPath: /var/lib/postgresql/data
+
+variables:
+  POSTGRES_USER: "temporal"
+  POSTGRES_PASSWORD: "$env(TEMPORAL_POSTGRES_PASSWORD)"
+  POSTGRES_DB: "temporal"
+  PGDATA: "/var/lib/postgresql/data/pgdata"

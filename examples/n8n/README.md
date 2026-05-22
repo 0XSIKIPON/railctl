@@ -1,223 +1,230 @@
-# n8n Stack Deployment Example
+# n8n Queue-Mode Deployment
 
-This directory contains example configurations for deploying an n8n stack to Railway using `railctl`.
+Deploy [n8n](https://n8n.io) in **queue mode** on [Railway](https://railway.app) using `railctl`.
+
+Queue mode separates the web UI from workflow execution, giving you independent
+scaling of workers and zero-downtime webhook processing.
 
 ## Architecture
 
-The n8n stack consists of 4 services:
+```
+┌─────────────────────────────────────────────────────────┐
+│  Railway Project                                        │
+│                                                         │
+│  ┌──────────────┐       ┌──────────────┐                │
+│  │  PostgreSQL   │◄──────│  n8n Primary │──► public URL  │
+│  │  (persistent) │       │  (web UI)    │                │
+│  └──────┬───────┘       └──────┬───────┘                │
+│         │                      │                        │
+│         │   ┌──────────────┐   │                        │
+│         │   │    Redis     │◄──┘                        │
+│         │   │  (job queue) │                            │
+│         │   └──────┬───────┘                            │
+│         │          │                                    │
+│         │   ┌──────┴───────┐                            │
+│         └──►│  n8n Worker  │  (×2 replicas)             │
+│             │  (execution) │                            │
+│             └──────────────┘                            │
+└─────────────────────────────────────────────────────────┘
+```
 
-1. **Postgres** - PostgreSQL database with persistent volume
-2. **Redis** - Redis cache for queue management with persistent volume
-3. **Primary** - Main n8n application server (web UI)
-4. **Worker** - Worker nodes for executing workflows
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `n8n-postgres` | `ghcr.io/railwayapp-templates/postgres-ssl:16` | Workflow & credential storage |
+| `n8n-redis` | `redis:7-alpine` | Bull job queue for async execution |
+| `n8n-primary` | `n8nio/n8n:latest` | Web editor, API, webhook receiver |
+| `n8n-worker` | `n8nio/n8n:latest` | Workflow execution (2 replicas) |
 
 ## Prerequisites
 
-- `railctl` CLI installed and built
-- `yq` YAML processor ([installation instructions](https://github.com/mikefarah/yq))
-  ```bash
-  # Install via snap (recommended)
-  sudo snap install yq
-  
-  # Or via apt (older version)
-  sudo apt install yq
-  ```
-- Railway API token
-- Environment variables configured (see `.envrc` example)
-
-## Configuration
-
-This deployment uses **declarative configuration files** as the single source of truth. Each service has a `config.yaml` file in its directory that defines:
-
-- Service metadata (name, image)
-- Deploy configuration (start command, restart policy, replicas)
-- Volume mounts
-- Environment variables
-
-The `deploy.sh` script reads these config files using `yq` and creates services accordingly.
-
-### Service Configuration Files
-
-- `n8n-postgres/config.yaml` - PostgreSQL 16 with SSL support
-- `n8n-redis/config.yaml` - Redis cache configuration
-- `n8n-primary/config.yaml` - n8n main server (web UI + API)
-- `n8n-worker/config.yaml` - n8n worker for background job execution
+- **railctl** — [installation instructions](../../README.md#installation)
+- **yq** — YAML processor ([install](https://github.com/mikefarah/yq#install))
+- **Railway account** — [sign up](https://railway.app) and create an API token
 
 ## Quick Start
 
-### 1. Set Up Environment Variables
-
-Create or edit `.envrc` with your configuration:
+### 1. Configure secrets
 
 ```bash
-export RAILWAY_TOKEN="your-railway-token"
-export RAILCTL_PROJECT="your-project-name"
-export RAILCTL_ENVIRONMENT="test"  # or production
+cp .envrc.example .envrc
+```
 
-# n8n deployment variables
-export RAILCTL_POSTGRES_PASSWORD="secure-postgres-password"
-export RAILCTL_REDIS_PASSWORD="secure-redis-password"
-export RAILCTL_N8N_ENCRYPTION_KEY="32-character-encryption-key"
-export RAILCTL_N8N_EDITOR_BASE_URL="https://n8n.example.com"
+Edit `.envrc` and fill in your values:
+
+```bash
+export RAILWAY_TOKEN="your-railway-api-token"
+export RAILCTL_PROJECT="my-n8n"
+export RAILCTL_ENVIRONMENT="production"
+
+# Generate secrets:
+#   openssl rand -hex 16
+export N8N_POSTGRES_PASSWORD="<generated>"
+export N8N_REDIS_PASSWORD="<generated>"
+export N8N_ENCRYPTION_KEY="<generated>"
 ```
 
 Load the environment:
+
 ```bash
-direnv allow  # if using direnv
-# or
 source .envrc
+# or, if using direnv:
+direnv allow
 ```
 
-### 2. Deploy the Stack
+### 2. Deploy
 
 ```bash
+chmod +x deploy.sh
 ./deploy.sh
 ```
 
 The script will:
-1. Validate dependencies (yq, railctl, environment variables)
-2. Deploy infrastructure services (Postgres, Redis) with volumes
-3. Deploy application services (Primary, Worker)
-4. Set all environment variables with proper Railway service references
+1. Create the Railway project and environment (if they don't exist)
+2. Deploy PostgreSQL and Redis with persistent volumes
+3. Deploy n8n Primary with a public domain
+4. Deploy n8n Workers (2 replicas)
+5. Wait for all deployments to reach `SUCCESS`
 
-### 3. Verify Deployment
+### 3. Verify
 
 ```bash
-# List all services
-railctl get services -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
+# List services
+railctl get services -p my-n8n -e production
 
-# Check volumes
-railctl get volumes -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
+# Check logs
+railctl logs service n8n-primary -p my-n8n -e production
 
-# View service details
-railctl describe service Primary -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
-
-# View logs
-railctl logs service Primary -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
+# Describe a service
+railctl describe service n8n-primary -p my-n8n -e production
 ```
 
-### 4. Clean Up
-
-To delete all services and volumes:
+### 4. Clean up
 
 ```bash
+chmod +x cleanup.sh
 ./cleanup.sh
 ```
 
-The cleanup script will:
-1. Delete all services (Worker, Primary, Redis, Postgres)
-2. Delete all orphaned volumes in the environment
+## Configuration Reference
 
-## Service References
+### Environment Variables (`.envrc`)
 
-The deployment uses Railway's service reference syntax to connect services:
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `RAILWAY_TOKEN` | ✅ | Railway API token |
+| `RAILCTL_PROJECT` | ✅ | Project name on Railway |
+| `RAILCTL_ENVIRONMENT` | ✅ | Environment name (e.g., `production`) |
+| `N8N_POSTGRES_PASSWORD` | ✅ | PostgreSQL password |
+| `N8N_REDIS_PASSWORD` | ✅ | Redis password |
+| `N8N_ENCRYPTION_KEY` | ✅ | n8n encryption key for credentials |
 
+### Config Files
+
+All service definitions live in `configs/` and are deployed in alphabetical order:
+
+| File | Service | Notes |
+|------|---------|-------|
+| `01-n8n-postgres.yaml` | PostgreSQL 16 | Volume, TCP proxy |
+| `02-n8n-redis.yaml` | Redis 7 | Volume |
+| `03-n8n-primary.yaml` | n8n web UI | Public domain on port 5678 |
+| `04-n8n-worker.yaml` | n8n workers | 2 replicas, no public endpoint |
+
+### Variable Syntax
+
+Config files support two variable syntaxes:
+
+- **`$env(VAR)`** — Expanded at deploy time from your local environment (secrets)
+- **`${{service.VAR}}`** — Railway service references, resolved at runtime
+
+Example:
 ```yaml
-# In Primary and Worker configs
-DB_POSTGRESDB_HOST: "${{Postgres.RAILWAY_PRIVATE_DOMAIN}}"
-DB_POSTGRESDB_PASSWORD: "${{Postgres.PGPASSWORD}}"
-QUEUE_BULL_REDIS_HOST: "${{Redis.RAILWAY_PRIVATE_DOMAIN}}"
-QUEUE_BULL_REDIS_PASSWORD: "${{Redis.REDIS_PASSWORD}}"
+variables:
+  POSTGRES_PASSWORD: "$env(N8N_POSTGRES_PASSWORD)"     # your secret
+  DB_HOST: "${{n8n-postgres.RAILWAY_PRIVATE_DOMAIN}}"   # resolved by Railway
 ```
 
-These references are automatically resolved by Railway at runtime, ensuring services can communicate securely over the private network.
+## How `deploy.sh` Works
 
-## Features Demonstrated
+The deploy script delegates to [`../shared/deploy.sh`](../shared/deploy.sh),
+which is a generic, reusable deployment engine:
 
-- ✅ **Config-driven deployment** - All configuration in YAML files
-- ✅ **Volume management** - Persistent data for Postgres and Redis
-- ✅ **Service-to-service references** - Automatic service discovery
-- ✅ **Deploy configuration** - Restart policies, replicas, start commands
-- ✅ **Environment variable expansion** - Local vars expanded, Railway refs preserved
-- ✅ **Dependency checking** - Validates all prerequisites before deployment
-- ✅ **Clean teardown** - Removes all services and volumes
+1. **Dependency check** — verifies `railctl`, `yq`, and env vars are available
+2. **Project/environment setup** — creates them if missing
+3. **Config iteration** — reads each `configs/*.yaml` in sort order
+4. **Idempotent service management** — creates or updates each service
+5. **Volume provisioning** — attaches persistent storage where configured
+6. **Variable injection** — expands `$env()` refs, preserves `${{}}` refs
+7. **Deployment await** — polls Railway until all services reach terminal status
 
-## Deployment Order
+### Deploy a single service
 
-The script deploys services in dependency order:
+```bash
+./deploy.sh --config 01-n8n-postgres.yaml
+```
 
-1. **Phase 1: Infrastructure**
-   - Postgres (database with volume)
-   - Redis (cache with volume)
+### Skip waiting
 
-2. **Phase 2: Application**
-   - Primary (web UI, depends on Postgres + Redis)
-   - Worker (background jobs, depends on Postgres + Redis)
+```bash
+./deploy.sh --skip-wait
+```
 
 ## Customization
 
-Edit the `config.yaml` files to customize:
+### Scale workers
 
-- **Image versions**: Change the `image` field
-- **Resources**: Adjust `numReplicas` for scaling
-- **Environment variables**: Add/modify in the `variables` section
-- **Start commands**: Customize `startCommand` for different modes
-- **Restart policies**: Change `restartPolicyType` and `restartPolicyMaxRetries`
+Edit `configs/04-n8n-worker.yaml`:
 
-### Example: Using a Custom n8n Image
+```yaml
+deploy:
+  numReplicas: 4  # scale to 4 workers
+```
 
-Edit `n8n-primary/config.yaml` and `n8n-worker/config.yaml`:
+### Pin n8n version
+
+Replace `latest` with a specific tag in both primary and worker configs:
 
 ```yaml
 service:
-  name: Primary
+  image: n8nio/n8n:1.70.3
+```
+
+### Use a private n8n image
+
+Add registry credentials to the config:
+
+```yaml
+service:
   image: ghcr.io/your-org/custom-n8n:latest
-
 registry:
-  username: "${GH_USERNAME}"
-  password: "${GH_PASSWORD}"
+  username: "$env(GH_USERNAME)"
+  password: "$env(GH_PASSWORD)"
 ```
 
-Then add the credentials to `.envrc`:
-```bash
-export GH_USERNAME="your-github-username"
-export GH_PASSWORD="your-github-token"
+Then add the credentials to `.envrc`.
+
+## Directory Structure
+
+```
+examples/n8n/
+├── configs/
+│   ├── 01-n8n-postgres.yaml   # PostgreSQL database
+│   ├── 02-n8n-redis.yaml      # Redis job queue
+│   ├── 03-n8n-primary.yaml    # n8n web UI & API
+│   └── 04-n8n-worker.yaml     # n8n worker (2 replicas)
+├── .envrc.example              # Template for secrets
+├── deploy.sh                   # Deployment entrypoint
+├── cleanup.sh                  # Teardown entrypoint
+└── README.md                   # This file
 ```
 
-## Troubleshooting
+## Features Demonstrated
 
-### Deployment Issues
-
-If deployment fails, check:
-
-1. **Environment variables**: Ensure all required vars are set
-   ```bash
-   env | grep RAILCTL
-   ```
-
-2. **Service logs**: Check for errors
-   ```bash
-   railctl logs service Primary -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
-   ```
-
-3. **Service status**: Verify deployment status
-   ```bash
-   railctl describe service Primary -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
-   ```
-
-### Volume Issues
-
-If volumes aren't being created or deleted properly:
-
-```bash
-# List all volumes
-railctl get volumes -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
-
-# Manually delete a volume
-railctl delete volume <volume-name> -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT --yes
-```
-
-### Debug Mode
-
-For detailed API request/response logging, use the `--debug` flag:
-
-```bash
-railctl --debug get services -p $RAILCTL_PROJECT -e $RAILCTL_ENVIRONMENT
-```
-
-## Notes
-
-- **Service names**: This example uses Railway template naming (`Postgres`, `Redis`, `Primary`, `Worker`)
-- **Official images**: Uses official `n8nio/n8n` and `railwayapp/redis` images
-- **Environment isolation**: Services are created only in the specified environment
-- **Volume cleanup**: The cleanup script removes ALL orphaned volumes in the environment
+- ✅ Config-driven declarative deployment
+- ✅ Persistent volumes (PostgreSQL, Redis)
+- ✅ Railway service-to-service references
+- ✅ Secret injection via `$env()` syntax
+- ✅ Public domain generation
+- ✅ TCP proxy for database access
+- ✅ Multi-replica workers
+- ✅ Deployment status polling
+- ✅ Idempotent create-or-update

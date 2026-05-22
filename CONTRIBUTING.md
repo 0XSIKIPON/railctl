@@ -67,7 +67,10 @@ railctl/
 │   ├── resolver/          # Name/ID resolution logic
 │   └── types/             # Data structures
 ├── tests/e2e/             # End-to-end tests
-├── examples/              # Example configurations
+├── examples/              # Deployment examples (n8n, Temporal)
+│   ├── shared/            # Reusable deploy/cleanup scripts
+│   ├── n8n/               # n8n queue-mode deployment
+│   └── temporal/          # Temporal workflow engine deployment
 ├── experiments/           # Experimental tools and prototypes
 └── docs/                  # Documentation
 ```

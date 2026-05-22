@@ -1,0 +1,15 @@
+# Railway API token — get one from https://railway.app/account/tokens
+export RAILWAY_TOKEN=""
+
+# Target project and environment (created automatically if they don't exist)
+export RAILCTL_PROJECT="my-temporal"
+export RAILCTL_ENVIRONMENT="production"
+
+# Temporal database secret — generate with: openssl rand -hex 16
+export TEMPORAL_POSTGRES_PASSWORD=""
+
+# Your worker image (only needed if deploying 04-temporal-worker.yaml)
+export TEMPORAL_WORKER_IMAGE="your-registry/your-worker:latest"
+export REGISTRY_USERNAME=""
+export REGISTRY_PASSWORD=""
+export TEMPORAL_TASK_QUEUE="my-task-queue"

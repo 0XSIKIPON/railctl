@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-# n8n Queue-Mode Deployment — delegates to shared deploy script
+# Temporal Workflow Engine Deployment — delegates to shared deploy script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../shared/deploy.sh" "$@"

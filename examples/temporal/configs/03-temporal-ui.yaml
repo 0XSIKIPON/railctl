@@ -1,0 +1,15 @@
+service:
+  name: temporal-ui
+  image: temporalio/ui:2.48.1
+
+deploy:
+  restartPolicyType: ON_FAILURE
+  restartPolicyMaxRetries: 3
+
+domain:
+  port: 8080
+
+variables:
+  TEMPORAL_ADDRESS: "${{temporal-server.RAILWAY_PRIVATE_DOMAIN}}:7233"
+  TEMPORAL_CORS_ORIGINS: "http://localhost:3000"
+  PORT: "8080"

@@ -1,0 +1,17 @@
+service:
+  name: n8n-redis
+  image: redis:7-alpine
+
+deploy:
+  restartPolicyType: ON_FAILURE
+  restartPolicyMaxRetries: 10
+
+volume:
+  mountPath: /data
+
+variables:
+  REDIS_PASSWORD: "$env(N8N_REDIS_PASSWORD)"
+  REDISHOST: "${{RAILWAY_PRIVATE_DOMAIN}}"
+  REDISPORT: "6379"
+  REDISUSER: "default"
+  REDIS_URL: "redis://${{n8n-redis.REDISUSER}}:${{n8n-redis.REDIS_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:6379"

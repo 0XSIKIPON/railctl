@@ -298,6 +298,32 @@ All `get` and `describe` commands support multiple output formats:
 - **JSON** (`-o json`) - Machine-readable JSON
 - **YAML** (`-o yaml`) - YAML format
 
+## Examples
+
+The [`examples/`](examples/) directory contains production-ready deployment templates
+that show how to deploy real-world stacks on Railway using `railctl`:
+
+| Example | Description | Services |
+|---------|-------------|----------|
+| **[n8n](examples/n8n/)** | n8n workflow automation in queue mode | PostgreSQL, Redis, n8n Primary, n8n Worker (×2) |
+| **[Temporal](examples/temporal/)** | Temporal durable workflow engine | PostgreSQL, Temporal Server, Temporal UI, Worker (×2) |
+
+Each example includes:
+- Declarative YAML config files for every service
+- A shared [`deploy.sh`](examples/shared/deploy.sh) script that handles idempotent create-or-update
+- Cleanup scripts for full teardown
+- `.envrc.example` templates for secrets
+- Detailed README with architecture diagrams
+
+```bash
+# Quick start with the n8n example
+cd examples/n8n
+cp .envrc.example .envrc
+# Edit .envrc with your Railway token and secrets
+source .envrc
+./deploy.sh
+```
+
 ## Development
 
 ### Prerequisites
