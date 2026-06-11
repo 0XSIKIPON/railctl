@@ -34,6 +34,7 @@ var (
 		client := api.NewClient(tkn)
 		client.Debug = debug
 		client.Workspace = getWorkspace()
+		client.WarnFn = func(msg string) { fmt.Fprintln(os.Stderr, msg) }
 		return client
 	}
 )
@@ -49,6 +50,7 @@ services, variables, and deployments via the Railway GraphQL API.
 
 Authentication:
   Set RAILWAY_TOKEN environment variable or use --token flag.
+  Token type (account, workspace, or project) is detected automatically.
 
 Workspace selection:
   When your token has access to multiple workspaces, specify one with

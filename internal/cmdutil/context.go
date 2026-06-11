@@ -6,6 +6,7 @@ package cmdutil
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/kubenoops/railctl/internal/api"
 	"github.com/kubenoops/railctl/internal/resolver"
@@ -41,19 +42,45 @@ type ResolveOpts struct {
 func ResolveContext(client api.APIClient, opts ResolveOpts) (*Context, error) {
 	ctx := &Context{Client: client}
 
-	// --- Project resolution (always required when opts.ProjectName is set) ---
-	if opts.ProjectName == "" {
-		return nil, fmt.Errorf("-p/--project is required. Use -p flag or set RAILCTL_PROJECT")
+	isProjectToken, err := client.IsProjectToken()
+	if err != nil {
+		return nil, err
 	}
 
-	projects, err := client.ListProjects()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list projects: %w", err)
-	}
-
-	project, err := resolver.ResolveProject(projects, opts.ProjectName)
-	if err != nil {
-		return nil, fmt.Errorf("project '%s' not found", opts.ProjectName)
+	// --- Project resolution ---
+	var project types.Project
+	if isProjectToken {
+		projectID, environmentID, err := client.GetProjectContext()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project context from token: %w", err)
+		}
+		if opts.ProjectName != "" {
+			fmt.Fprintf(os.Stderr, "Warning: -p/RAILCTL_PROJECT ignored — project token is already scoped to a specific project\n")
+		}
+		if opts.NeedEnvironment && opts.EnvironmentName != "" {
+			fmt.Fprintf(os.Stderr, "Warning: -e/RAILCTL_ENVIRONMENT ignored — project token is already scoped to a specific environment\n")
+		}
+		p, err := client.GetProject(projectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch project from token: %w", err)
+		}
+		project = p
+		opts.ProjectName = p.ID
+		if opts.NeedEnvironment && environmentID != "" {
+			opts.EnvironmentName = environmentID
+		}
+	} else {
+		if opts.ProjectName == "" {
+			return nil, fmt.Errorf("-p/--project is required. Use -p flag or set RAILCTL_PROJECT")
+		}
+		projects, err := client.ListProjects()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list projects: %w", err)
+		}
+		project, err = resolver.ResolveProject(projects, opts.ProjectName)
+		if err != nil {
+			return nil, fmt.Errorf("project '%s' not found", opts.ProjectName)
+		}
 	}
 	ctx.Project = project
 

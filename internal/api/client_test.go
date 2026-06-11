@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,13 +223,126 @@ func makeWorkspaceServer(t *testing.T, workspaces []workspaceEntry) *httptest.Se
 	}))
 }
 
+// makeUnauthorizedWorkspaceServer returns a server that rejects all probes — simulates
+// a completely invalid token.
 func makeUnauthorizedWorkspaceServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"errors":[{"message":"Not Authorized"}]}`))
 	}))
+}
+
+// makeTokenDetectionServer returns a server that simulates the three Railway token-type
+// probes. It dispatches by header and query body so each probe scenario can be tested.
+func makeTokenDetectionServer(t *testing.T, accountWorks, workspaceWorks, projectWorks bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		// Probe 3 uses Project-Access-Token header
+		if r.Header.Get("Project-Access-Token") != "" {
+			if projectWorks {
+				w.Write([]byte(`{"data":{"projectToken":{"projectId":"proj-123","environmentId":"env-456"}}}`))
+			} else {
+				w.Write([]byte(`{"errors":[{"message":"Not Authorized"}]}`))
+			}
+			return
+		}
+
+		// Probe 1 queries me.workspaces
+		if strings.Contains(bodyStr, "workspaces") {
+			if accountWorks {
+				w.Write([]byte(`{"data":{"me":{"workspaces":[{"id":"ws-123","name":"test-ws"}]}}}`))
+			} else {
+				w.Write([]byte(`{"errors":[{"message":"Not Authorized"}]}`))
+			}
+			return
+		}
+
+		// Probe 2 lists projects
+		if workspaceWorks {
+			w.Write([]byte(`{"data":{"projects":{"edges":[]}}}`))
+		} else {
+			w.Write([]byte(`{"errors":[{"message":"Not Authorized"}]}`))
+		}
+	}))
+}
+
+func TestDetectTokenType(t *testing.T) {
+	tests := []struct {
+		name               string
+		accountWorks       bool
+		workspaceWorks     bool
+		projectWorks       bool
+		wantType           TokenType
+		wantProjectToken   bool
+		wantWorkspaceToken bool
+		wantErrContains    string
+	}{
+		{
+			name:         "account token detected",
+			accountWorks: true,
+			wantType:     TokenTypeAccount,
+		},
+		{
+			name:               "workspace token detected",
+			workspaceWorks:     true,
+			wantType:           TokenTypeWorkspace,
+			wantWorkspaceToken: true,
+		},
+		{
+			name:             "project token detected",
+			projectWorks:     true,
+			wantType:         TokenTypeProject,
+			wantProjectToken: true,
+		},
+		{
+			name:            "all probes fail returns error",
+			wantErrContains: "not authorized",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := makeTokenDetectionServer(t, tt.accountWorks, tt.workspaceWorks, tt.projectWorks)
+			defer server.Close()
+
+			c := NewClient("test-token")
+			c.apiURL = server.URL
+
+			got, err := c.detectTokenType()
+
+			if tt.wantErrContains != "" {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(strings.ToLower(err.Error()), tt.wantErrContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErrContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantType {
+				t.Errorf("detectTokenType() = %v, want %v", got, tt.wantType)
+			}
+			if tt.wantProjectToken && c.ProjectToken == "" {
+				t.Error("expected c.ProjectToken to be set after project token detection")
+			}
+			if !tt.wantProjectToken && c.ProjectToken != "" {
+				t.Errorf("expected c.ProjectToken to be empty, got %q", c.ProjectToken)
+			}
+			if tt.wantWorkspaceToken != c.WorkspaceScopedToken {
+				t.Errorf("c.WorkspaceScopedToken = %v, want %v", c.WorkspaceScopedToken, tt.wantWorkspaceToken)
+			}
+		})
+	}
 }
 
 func TestGetWorkspaceID(t *testing.T) {
@@ -346,34 +461,170 @@ func TestGetWorkspaceID(t *testing.T) {
 	}
 }
 
+func TestDetectTokenType_CachedAfterFirstCall(t *testing.T) {
+	var callCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"errors":[{"message":"Not Authorized"}]}`))
+	}))
+	defer server.Close()
+
+	c := NewClient("test-token")
+	c.apiURL = server.URL
+
+	// Three separate callers that each trigger detection internally.
+	_, _ = c.IsProjectToken()
+	_, _ = c.IsWorkspaceToken()
+	_, _ = c.GetWorkspaceID()
+
+	// Exactly 3 API calls: one probe sequence (account + workspace + project), never repeated.
+	if got := callCount.Load(); got != 3 {
+		t.Errorf("expected exactly 3 API calls (one probe sequence), got %d", got)
+	}
+}
+
+func TestGetProjectContext(t *testing.T) {
+	t.Run("returns cached IDs without extra API call", func(t *testing.T) {
+		var callCount atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			if r.Header.Get("Project-Access-Token") != "" {
+				w.Write([]byte(`{"data":{"projectToken":{"projectId":"proj-123","environmentId":"env-456"}}}`))
+			} else {
+				w.Write([]byte(`{"errors":[{"message":"Not Authorized"}]}`))
+			}
+		}))
+		defer server.Close()
+
+		c := NewClient("test-token")
+		c.apiURL = server.URL
+
+		projectID, environmentID, err := c.GetProjectContext()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if projectID != "proj-123" {
+			t.Errorf("projectID = %q, want %q", projectID, "proj-123")
+		}
+		if environmentID != "env-456" {
+			t.Errorf("environmentID = %q, want %q", environmentID, "env-456")
+		}
+		// 3 probes during detection, 0 extra calls for GetProjectContext (uses cache)
+		if got := callCount.Load(); got != 3 {
+			t.Errorf("expected 3 API calls (detection only), got %d", got)
+		}
+	})
+
+	t.Run("returns error for non-project token", func(t *testing.T) {
+		server := makeTokenDetectionServer(t, false, true, false) // workspace token
+		defer server.Close()
+
+		c := NewClient("test-token")
+		c.apiURL = server.URL
+
+		_, _, err := c.GetProjectContext()
+		if err == nil {
+			t.Fatal("expected error for workspace token, got nil")
+		}
+	})
+}
+
+func TestGetWorkspaceID_ProjectToken(t *testing.T) {
+	// Project token: GetWorkspaceID should return "" with no error.
+	server := makeTokenDetectionServer(t, false, false, true)
+	defer server.Close()
+
+	c := NewClient("test-token")
+	c.apiURL = server.URL
+
+	id, err := c.GetWorkspaceID()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "" {
+		t.Errorf("expected empty workspace ID for project token, got %q", id)
+	}
+}
+
+func TestGetWorkspaceID_Warnings(t *testing.T) {
+	tests := []struct {
+		name            string
+		accountWorks    bool
+		workspaceWorks  bool
+		projectWorks    bool
+		workspaceHint   string
+		wantWarnContain string
+	}{
+		{
+			name:            "workspace token + -w flag prints warning",
+			workspaceWorks:  true,
+			workspaceHint:   "my-team",
+			wantWarnContain: "workspace token is already scoped",
+		},
+		{
+			name:            "project token + -w flag prints warning",
+			projectWorks:    true,
+			workspaceHint:   "my-team",
+			wantWarnContain: "project token is already scoped",
+		},
+		{
+			name:           "workspace token without -w flag prints no warning",
+			workspaceWorks: true,
+			workspaceHint:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := makeTokenDetectionServer(t, tt.accountWorks, tt.workspaceWorks, tt.projectWorks)
+			defer server.Close()
+
+			c := NewClient("test-token")
+			c.apiURL = server.URL
+			c.Workspace = tt.workspaceHint
+
+			var buf bytes.Buffer
+			c.WarnFn = func(msg string) { fmt.Fprintln(&buf, msg) }
+
+			_, _ = c.GetWorkspaceID()
+
+			stderr := buf.String()
+
+			if tt.wantWarnContain != "" {
+				if !strings.Contains(stderr, tt.wantWarnContain) {
+					t.Errorf("expected warning to contain %q, got: %q", tt.wantWarnContain, stderr)
+				}
+			} else {
+				if strings.Contains(stderr, "Warning:") {
+					t.Errorf("expected no warning, got: %q", stderr)
+				}
+			}
+		})
+	}
+}
+
 func TestGetWorkspaceID_Unauthorized(t *testing.T) {
+	// All three detection probes fail — simulates a completely invalid token.
 	server := makeUnauthorizedWorkspaceServer(t)
 	defer server.Close()
 
-	t.Run("no hint returns error", func(t *testing.T) {
-		c := NewClient("test-token")
-		c.apiURL = server.URL
+	for _, name := range []string{"no workspace hint", "with workspace hint"} {
+		t.Run(name, func(t *testing.T) {
+			c := NewClient("test-token")
+			c.apiURL = server.URL
+			if name == "with workspace hint" {
+				c.Workspace = "my-team"
+			}
 
-		_, err := c.GetWorkspaceID()
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "not authorized") {
-			t.Errorf("error %q should mention authorization", err.Error())
-		}
-	})
-
-	t.Run("with hint returns error", func(t *testing.T) {
-		c := NewClient("test-token")
-		c.apiURL = server.URL
-		c.Workspace = "my-team"
-
-		_, err := c.GetWorkspaceID()
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "not authorized") {
-			t.Errorf("error %q should mention authorization", err.Error())
-		}
-	})
+			_, err := c.GetWorkspaceID()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "not authorized") {
+				t.Errorf("error %q should mention authorization", err.Error())
+			}
+		})
+	}
 }
