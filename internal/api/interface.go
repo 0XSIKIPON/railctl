@@ -70,6 +70,11 @@ type APIClient interface {
 
 	// Workspace
 	GetWorkspaceID() (string, error)
+
+	// Token type
+	IsProjectToken() (bool, error)
+	IsWorkspaceToken() (bool, error)
+	GetProjectContext() (projectID, environmentID string, err error)
 }
 
 // Ensure Client implements APIClient interface.

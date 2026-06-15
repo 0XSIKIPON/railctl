@@ -22,6 +22,7 @@ var (
 	// Global flags
 	token        string
 	outputFormat string
+	workspace    string
 	project      string
 	environment  string
 	service      string
@@ -32,6 +33,8 @@ var (
 	newAPIClient = func(tkn string) api.APIClient {
 		client := api.NewClient(tkn)
 		client.Debug = debug
+		client.Workspace = getWorkspace()
+		client.WarnFn = func(msg string) { fmt.Fprintln(os.Stderr, msg) }
 		return client
 	}
 )
@@ -47,11 +50,17 @@ services, variables, and deployments via the Railway GraphQL API.
 
 Authentication:
   Set RAILWAY_TOKEN environment variable or use --token flag.
+  Token type (account, workspace, or project) is detected automatically.
+
+Workspace selection:
+  When your token has access to multiple workspaces, specify one with
+  -w <name> or RAILCTL_WORKSPACE=<name>. Single-workspace tokens are
+  auto-detected.
 
 Examples:
-  railctl get projects
+  railctl get projects -w my-team
   railctl get projects -o json
-  railctl describe project my-app
+  railctl describe project my-app -w my-team
   railctl get services -p my-app -e production`,
 	SilenceUsage: true,
 	Version:      version,
@@ -79,6 +88,8 @@ func init() {
 		"Railway API token (default: RAILWAY_TOKEN env var)")
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "output", "o", "table",
 		fmt.Sprintf("Output format: %v", output.ValidFormats()))
+	rootCmd.PersistentFlags().StringVarP(&workspace, "workspace", "w", "",
+		"Workspace name (default: RAILCTL_WORKSPACE env var)")
 	rootCmd.PersistentFlags().StringVarP(&project, "project", "p", "",
 		"Project name (default: RAILCTL_PROJECT env var)")
 	rootCmd.PersistentFlags().StringVarP(&environment, "environment", "e", "",
@@ -101,6 +112,14 @@ func getToken() (string, error) {
 		return envToken, nil
 	}
 	return "", fmt.Errorf("no API token provided. Set RAILWAY_TOKEN environment variable or use --token flag")
+}
+
+// getWorkspace returns the workspace name from flag or environment variable.
+func getWorkspace() string {
+	if workspace != "" {
+		return workspace
+	}
+	return os.Getenv("RAILCTL_WORKSPACE")
 }
 
 // getProject returns the project name from flag or environment variable.
