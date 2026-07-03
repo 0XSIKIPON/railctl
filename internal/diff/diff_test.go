@@ -433,8 +433,8 @@ func TestCompute_NoPrune(t *testing.T) {
 
 func TestCompute_Mixed(t *testing.T) {
 	desired := []config.ServiceConfig{
-		{Name: "new-service", Image: "redis:7"},                  // create
-		{Name: "web", Image: "node:20-alpine"},                   // update (image change)
+		{Name: "new-service", Image: "redis:7"}, // create
+		{Name: "web", Image: "node:20-alpine"},  // update (image change)
 		// old-service not in desired — should be deleted with prune=true
 	}
 	live := []LiveService{
@@ -575,5 +575,186 @@ func TestChangeSet_Summary(t *testing.T) {
 	expectedEmpty := "0 to create, 0 to update, 0 to delete"
 	if empty.Summary() != expectedEmpty {
 		t.Errorf("Summary() = %q, expected %q", empty.Summary(), expectedEmpty)
+	}
+}
+
+func TestCompute_CreateShowsRegistryMaskedPassword(t *testing.T) {
+	desired := []config.ServiceConfig{
+		{
+			Name:  "api",
+			Image: "ghcr.io/acme/api:v1",
+			Registry: config.RegistryConfig{
+				Username: "acme-bot",
+				Password: "ghp_supersecrettoken",
+			},
+		},
+	}
+
+	cs := Compute(desired, nil, false)
+	if len(cs.Changes) != 1 || cs.Changes[0].Type != ChangeCreate {
+		t.Fatalf("expected 1 create change, got %+v", cs.Changes)
+	}
+
+	var sawUser, sawPass bool
+	for _, f := range cs.Changes[0].Fields {
+		switch f.Path {
+		case "registry.username":
+			sawUser = true
+			if f.Desired != "acme-bot" {
+				t.Errorf("registry.username should be shown in clear, got %q", f.Desired)
+			}
+		case "registry.password":
+			sawPass = true
+			if f.Desired == "ghp_supersecrettoken" {
+				t.Error("registry.password must be masked, not shown in clear")
+			}
+			if f.Desired == "" {
+				t.Error("registry.password should be present (masked), not empty")
+			}
+		}
+	}
+	if !sawUser {
+		t.Error("expected registry.username field in create diff")
+	}
+	if !sawPass {
+		t.Error("expected registry.password field in create diff")
+	}
+}
+
+func TestCompute_NoRegistryNoRegistryFields(t *testing.T) {
+	desired := []config.ServiceConfig{
+		{Name: "pg", Image: "postgres:16"}, // public image, no registry block
+	}
+	cs := Compute(desired, nil, false)
+	if len(cs.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(cs.Changes))
+	}
+	for _, f := range cs.Changes[0].Fields {
+		if f.Path == "registry.username" || f.Path == "registry.password" {
+			t.Errorf("did not expect registry field %q for a service without a registry block", f.Path)
+		}
+	}
+}
+
+func TestCompute_CreatePartialRegistryOmitted(t *testing.T) {
+	// Only a username (no password) — apply would send no creds, so the diff
+	// must not show a partial, misleading credential.
+	desired := []config.ServiceConfig{
+		{
+			Name:     "api",
+			Image:    "ghcr.io/acme/api:v1",
+			Registry: config.RegistryConfig{Username: "acme-bot"},
+		},
+	}
+	cs := Compute(desired, nil, false)
+	if len(cs.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(cs.Changes))
+	}
+	for _, f := range cs.Changes[0].Fields {
+		if f.Path == "registry.username" || f.Path == "registry.password" {
+			t.Errorf("did not expect registry field %q when creds are incomplete", f.Path)
+		}
+	}
+}
+
+func TestCompute_UpdateShowsRegistryWhenOtherChanges(t *testing.T) {
+	desired := []config.ServiceConfig{
+		{
+			Name:     "api",
+			Image:    "ghcr.io/acme/api:v2", // changed → triggers an update
+			Registry: config.RegistryConfig{Username: "acme-bot", Password: "ghp_token"},
+		},
+	}
+	live := []LiveService{{Name: "api", Image: "ghcr.io/acme/api:v1"}}
+
+	cs := Compute(desired, live, false)
+	if len(cs.Changes) != 1 || cs.Changes[0].Type != ChangeUpdate {
+		t.Fatalf("expected 1 update change, got %+v", cs.Changes)
+	}
+
+	var sawUser, sawPass bool
+	for _, f := range cs.Changes[0].Fields {
+		switch f.Path {
+		case "registry.username":
+			sawUser = true
+		case "registry.password":
+			sawPass = true
+			if f.Desired == "ghp_token" {
+				t.Error("registry.password must be masked in the update diff")
+			}
+		}
+	}
+	if !sawUser || !sawPass {
+		t.Error("expected registry.username and registry.password in the update diff")
+	}
+}
+
+func TestCompute_UpdateNoOtherChangesOmitsRegistry(t *testing.T) {
+	// Fully converged except (unknowable) creds — no other field differs, so the
+	// service must NOT show as an update just for registry (avoids spurious redeploy).
+	svc := config.ServiceConfig{
+		Name:     "api",
+		Image:    "ghcr.io/acme/api:v1",
+		Registry: config.RegistryConfig{Username: "acme-bot", Password: "ghp_token"},
+	}
+	live := []LiveService{{Name: "api", Image: "ghcr.io/acme/api:v1"}}
+
+	cs := Compute([]config.ServiceConfig{svc}, live, false)
+	if len(cs.Changes) != 0 {
+		t.Errorf("expected no changes for a converged service, got %+v", cs.Changes)
+	}
+}
+
+func TestCompute_DeployConfigConvergesWhenLiveMatches(t *testing.T) {
+	// Live now carries deploy config (restartPolicy/maxRetries/etc.), so a service
+	// whose live deploy config already matches desired shows no deploy diff.
+	desired := []config.ServiceConfig{
+		{
+			Name:  "api",
+			Image: "ghcr.io/acme/api:v1",
+			Deploy: config.DeployConfig{
+				RestartPolicy: "ON_FAILURE",
+				MaxRetries:    10,
+			},
+		},
+	}
+	live := []LiveService{
+		{
+			Name:  "api",
+			Image: "ghcr.io/acme/api:v1",
+			Deploy: LiveDeployConfig{
+				RestartPolicy: "ON_FAILURE",
+				MaxRetries:    10,
+			},
+		},
+	}
+
+	cs := Compute(desired, live, false)
+	if len(cs.Changes) != 0 {
+		t.Errorf("expected no changes when live deploy config matches, got %+v", cs.Changes)
+	}
+}
+
+func TestCompute_DeployConfigUndeclaredFieldsUnmanaged(t *testing.T) {
+	// A config with no deploy fields must not diff against Railway's defaults —
+	// otherwise it perma-diffs and apply overwrites them with zeros (e.g. 0 replicas).
+	desired := []config.ServiceConfig{
+		{Name: "api", Image: "ghcr.io/acme/api:v1"},
+	}
+	live := []LiveService{
+		{
+			Name:  "api",
+			Image: "ghcr.io/acme/api:v1",
+			Deploy: LiveDeployConfig{
+				Replicas:      1,
+				RestartPolicy: "ON_FAILURE",
+				MaxRetries:    10,
+			},
+		},
+	}
+
+	cs := Compute(desired, live, false)
+	if len(cs.Changes) != 0 {
+		t.Errorf("expected no changes for a config with no deploy block, got %+v", cs.Changes)
 	}
 }

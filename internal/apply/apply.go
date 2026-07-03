@@ -121,15 +121,7 @@ func applyCreate(client api.APIClient, rc diff.ResourceChange, projectID, envID 
 
 	fmt.Fprintf(w, "Creating service '%s'...\n", name)
 
-	// Build registry credentials.
-	var creds *api.RegistryCredentials
-	if cfg.Registry.Username != "" && cfg.Registry.Password != "" {
-		creds = &api.RegistryCredentials{
-			Username: cfg.Registry.Username,
-			Password: cfg.Registry.Password,
-		}
-	}
-
+	creds := registryCreds(cfg.Registry)
 	svc, err := client.CreateService(projectID, envID, name, cfg.Image, creds)
 	if err != nil {
 		return fmt.Errorf("creating service: %w", err)
@@ -196,17 +188,20 @@ func applyUpdate(client api.APIClient, rc diff.ResourceChange, projectID, envID 
 
 	imageChanged, newImage, deployFields, varAdded, varRemoved, volumeChanged, domainChanged, tcpChanged := extractFieldChanges(rc.Fields)
 
-	// Update image.
-	if imageChanged {
-		var creds *api.RegistryCredentials
-		if cfg.Registry.Username != "" && cfg.Registry.Password != "" {
-			creds = &api.RegistryCredentials{
-				Username: cfg.Registry.Username,
-				Password: cfg.Registry.Password,
-			}
+	// Only staged changes need a deploy. Networking applies immediately and the
+	// volume branch stages nothing, so neither is included.
+	needsDeploy := imageChanged || len(deployFields) > 0 || len(varAdded) > 0 || len(varRemoved) > 0
+
+	// Creds are write-only, so re-assert them — but only when a deploy will roll
+	// them out (they're used at image-pull time), else they'd strand as pending.
+	creds := registryCreds(cfg.Registry)
+	if imageChanged || (creds != nil && needsDeploy) {
+		image := ""
+		if imageChanged {
+			image = newImage
 		}
-		if err := client.UpdateServiceInstance(serviceID, envID, newImage, creds); err != nil {
-			return fmt.Errorf("updating image: %w", err)
+		if err := client.UpdateServiceInstance(serviceID, envID, image, creds); err != nil {
+			return fmt.Errorf("updating image/registry credentials: %w", err)
 		}
 	}
 
@@ -218,9 +213,14 @@ func applyUpdate(client api.APIClient, rc diff.ResourceChange, projectID, envID 
 		}
 	}
 
-	// Update variables.
+	// Read values from config, not the diff fields: those mask secrets, and
+	// writing the mask would clobber the real value.
 	if len(varAdded) > 0 {
-		if err := client.SetVariables(projectID, envID, serviceID, varAdded, true); err != nil {
+		realVars := make(map[string]string, len(varAdded))
+		for k := range varAdded {
+			realVars[k] = cfg.Variables[k]
+		}
+		if err := client.SetVariables(projectID, envID, serviceID, realVars, true); err != nil {
 			return fmt.Errorf("setting variables: %w", err)
 		}
 	}
@@ -301,6 +301,13 @@ func applyUpdate(client api.APIClient, rc diff.ResourceChange, projectID, envID 
 		}
 	}
 
+	// Roll out the staged changes (create rolls out via serviceCreate).
+	if needsDeploy {
+		if _, err := client.DeployServiceInstance(serviceID, envID); err != nil {
+			return fmt.Errorf("triggering deployment: %w", err)
+		}
+	}
+
 	fmt.Fprintf(w, "✓ Service '%s' updated\n", name)
 	return nil
 }
@@ -368,6 +375,15 @@ func findServiceID(services []types.ServiceDetail, name string) (string, error) 
 		}
 	}
 	return "", fmt.Errorf("service %q not found", name)
+}
+
+// registryCreds returns the configured private-registry credentials, or nil
+// when either field is unset.
+func registryCreds(r config.RegistryConfig) *api.RegistryCredentials {
+	if r.Username == "" || r.Password == "" {
+		return nil
+	}
+	return &api.RegistryCredentials{Username: r.Username, Password: r.Password}
 }
 
 // buildDeployConfigFromConfig extracts pointer args from a DeployConfig for

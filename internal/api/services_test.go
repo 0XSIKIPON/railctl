@@ -379,6 +379,104 @@ func TestUpdateServiceInstance(t *testing.T) {
 	}
 }
 
+// regCredsFromInput extracts input.registryCredentials from a captured GraphQL
+// request's variables.input, or nil if absent.
+func regCredsFromInput(input map[string]any) map[string]any {
+	rc, ok := input["registryCredentials"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return rc
+}
+
+// captureInputServer returns a test server that records the GraphQL request's
+// variables.input into *got and replies with resp.
+func captureInputServer(got *map[string]any, resp string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				Input map[string]any `json:"input"`
+			} `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		*got = req.Variables.Input
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(resp))
+	}))
+}
+
+func TestCreateService_SendsRegistryCredentials(t *testing.T) {
+	var input map[string]any
+	server := captureInputServer(&input, `{"data":{"serviceCreate":{"id":"svc-1","name":"api"}}}`)
+	defer server.Close()
+
+	client := NewClient("test-token")
+	client.apiURL = server.URL
+	if _, err := client.CreateService("proj-1", "env-1", "api", "ghcr.io/acme/api:v1",
+		&RegistryCredentials{Username: "acme-bot", Password: "ghp_token"}); err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+
+	rc := regCredsFromInput(input)
+	if rc == nil {
+		t.Fatal("expected registryCredentials in serviceCreate input")
+	}
+	if rc["username"] != "acme-bot" || rc["password"] != "ghp_token" {
+		t.Errorf("registryCredentials mismatch: got %v", rc)
+	}
+}
+
+func TestCreateService_OmitsRegistryCredentialsWhenNil(t *testing.T) {
+	var input map[string]any
+	server := captureInputServer(&input, `{"data":{"serviceCreate":{"id":"svc-1","name":"pg"}}}`)
+	defer server.Close()
+
+	client := NewClient("test-token")
+	client.apiURL = server.URL
+	if _, err := client.CreateService("proj-1", "env-1", "pg", "postgres:16", nil); err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	if rc := regCredsFromInput(input); rc != nil {
+		t.Errorf("did not expect registryCredentials for nil creds, got %v", rc)
+	}
+}
+
+func TestUpdateServiceInstance_SendsRegistryCredentials(t *testing.T) {
+	var input map[string]any
+	server := captureInputServer(&input, `{"data":{"serviceInstanceUpdate":true}}`)
+	defer server.Close()
+
+	client := NewClient("test-token")
+	client.apiURL = server.URL
+	if err := client.UpdateServiceInstance("svc-1", "env-1", "ghcr.io/acme/api:v2",
+		&RegistryCredentials{Username: "acme-bot", Password: "ghp_token"}); err != nil {
+		t.Fatalf("UpdateServiceInstance: %v", err)
+	}
+
+	rc := regCredsFromInput(input)
+	if rc == nil {
+		t.Fatal("expected registryCredentials in serviceInstanceUpdate input")
+	}
+	if rc["username"] != "acme-bot" || rc["password"] != "ghp_token" {
+		t.Errorf("registryCredentials mismatch: got %v", rc)
+	}
+}
+
+func TestUpdateServiceInstance_OmitsRegistryCredentialsWhenNil(t *testing.T) {
+	var input map[string]any
+	server := captureInputServer(&input, `{"data":{"serviceInstanceUpdate":true}}`)
+	defer server.Close()
+
+	client := NewClient("test-token")
+	client.apiURL = server.URL
+	if err := client.UpdateServiceInstance("svc-1", "env-1", "nginx:alpine", nil); err != nil {
+		t.Fatalf("UpdateServiceInstance: %v", err)
+	}
+	if rc := regCredsFromInput(input); rc != nil {
+		t.Errorf("did not expect registryCredentials for nil creds, got %v", rc)
+	}
+}
+
 func TestDeployServiceInstance(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -533,126 +631,46 @@ func TestServiceNodeToServiceDetail(t *testing.T) {
 		want  types.ServiceDetail
 	}{
 		{
-			name: "service with image source",
+			name: "service with image source and deploy config",
 			node: serviceNode{
 				ID:        "service-1",
 				Name:      "web",
 				Icon:      "🌐",
 				UpdatedAt: now,
-				ServiceInstances: struct {
-					Edges []struct {
-						Node struct {
-							ID            string `json:"id"`
-							EnvironmentID string `json:"environmentId"`
-							StartCommand  string `json:"startCommand"`
-							Source        struct {
-								Image string `json:"image"`
-								Repo  string `json:"repo"`
-							} `json:"source"`
-							LatestDeployment *struct {
-								ID                string    `json:"id"`
-								Status            string    `json:"status"`
-								CreatedAt         time.Time `json:"createdAt"`
-								Meta              any       `json:"meta"`
-								DeploymentStopped bool      `json:"deploymentStopped"`
-							} `json:"latestDeployment"`
-							ActiveDeployments []struct {
-								ID     string `json:"id"`
-								Status string `json:"status"`
-							} `json:"activeDeployments"`
-						} `json:"node"`
-					} `json:"edges"`
-				}{
-					Edges: []struct {
-						Node struct {
-							ID            string `json:"id"`
-							EnvironmentID string `json:"environmentId"`
-							StartCommand  string `json:"startCommand"`
-							Source        struct {
-								Image string `json:"image"`
-								Repo  string `json:"repo"`
-							} `json:"source"`
-							LatestDeployment *struct {
-								ID                string    `json:"id"`
-								Status            string    `json:"status"`
-								CreatedAt         time.Time `json:"createdAt"`
-								Meta              any       `json:"meta"`
-								DeploymentStopped bool      `json:"deploymentStopped"`
-							} `json:"latestDeployment"`
-							ActiveDeployments []struct {
-								ID     string `json:"id"`
-								Status string `json:"status"`
-							} `json:"activeDeployments"`
-						} `json:"node"`
-					}{
-						{
-							Node: struct {
-								ID            string `json:"id"`
-								EnvironmentID string `json:"environmentId"`
-								StartCommand  string `json:"startCommand"`
-								Source        struct {
-									Image string `json:"image"`
-									Repo  string `json:"repo"`
-								} `json:"source"`
-								LatestDeployment *struct {
-									ID                string    `json:"id"`
-									Status            string    `json:"status"`
-									CreatedAt         time.Time `json:"createdAt"`
-									Meta              any       `json:"meta"`
-									DeploymentStopped bool      `json:"deploymentStopped"`
-								} `json:"latestDeployment"`
-								ActiveDeployments []struct {
-									ID     string `json:"id"`
-									Status string `json:"status"`
-								} `json:"activeDeployments"`
-							}{
-								ID:            "instance-1",
-								EnvironmentID: "env-1",
-								StartCommand:  "npm start",
-								Source: struct {
-									Image string `json:"image"`
-									Repo  string `json:"repo"`
-								}{
-									Image: "nginx:latest",
-									Repo:  "",
-								},
-								LatestDeployment: &struct {
-									ID                string    `json:"id"`
-									Status            string    `json:"status"`
-									CreatedAt         time.Time `json:"createdAt"`
-									Meta              any       `json:"meta"`
-									DeploymentStopped bool      `json:"deploymentStopped"`
-								}{
-									ID:                "deploy-1",
-									Status:            "SUCCESS",
-									CreatedAt:         now,
-									Meta:              map[string]any{},
-									DeploymentStopped: false,
-								},
-								ActiveDeployments: []struct {
-									ID     string `json:"id"`
-									Status string `json:"status"`
-								}{
-									{ID: "deploy-1", Status: "SUCCESS"},
-								},
-							},
-						},
+				ServiceInstances: serviceInstances{Edges: []serviceInstanceEdge{{Node: serviceInstanceNode{
+					ID:                      "instance-1",
+					EnvironmentID:           "env-1",
+					StartCommand:            "npm start",
+					RestartPolicyType:       "ON_FAILURE",
+					RestartPolicyMaxRetries: 10,
+					NumReplicas:             2,
+					HealthcheckPath:         "/health",
+					HealthcheckTimeout:      30,
+					Source:                  serviceInstanceSource{Image: "nginx:latest"},
+					LatestDeployment: &serviceInstanceDeployment{
+						ID: "deploy-1", Status: "SUCCESS", CreatedAt: now, Meta: map[string]any{},
 					},
-				},
+					ActiveDeployments: []serviceInstanceDeployment{{ID: "deploy-1", Status: "SUCCESS"}},
+				}}}},
 			},
 			envID: "env-1",
 			want: types.ServiceDetail{
-				ID:           "service-1",
-				Name:         "web",
-				Icon:         "🌐",
-				UpdatedAt:    now,
-				InstanceID:   "instance-1",
-				StartCommand: "npm start",
-				Source:       "nginx:latest",
-				SourceType:   "image",
-				Status:       "SUCCESS",
-				DeploymentID: "deploy-1",
-				DeployedAt:   now,
+				ID:                 "service-1",
+				Name:               "web",
+				Icon:               "🌐",
+				UpdatedAt:          now,
+				InstanceID:         "instance-1",
+				StartCommand:       "npm start",
+				RestartPolicy:      "ON_FAILURE",
+				MaxRetries:         10,
+				Replicas:           2,
+				HealthcheckPath:    "/health",
+				HealthcheckTimeout: 30,
+				Source:             "nginx:latest",
+				SourceType:         "image",
+				Status:             "SUCCESS",
+				DeploymentID:       "deploy-1",
+				DeployedAt:         now,
 			},
 		},
 		{
@@ -662,92 +680,12 @@ func TestServiceNodeToServiceDetail(t *testing.T) {
 				Name:      "api",
 				Icon:      "⚙️",
 				UpdatedAt: now,
-				ServiceInstances: struct {
-					Edges []struct {
-						Node struct {
-							ID            string `json:"id"`
-							EnvironmentID string `json:"environmentId"`
-							StartCommand  string `json:"startCommand"`
-							Source        struct {
-								Image string `json:"image"`
-								Repo  string `json:"repo"`
-							} `json:"source"`
-							LatestDeployment *struct {
-								ID                string    `json:"id"`
-								Status            string    `json:"status"`
-								CreatedAt         time.Time `json:"createdAt"`
-								Meta              any       `json:"meta"`
-								DeploymentStopped bool      `json:"deploymentStopped"`
-							} `json:"latestDeployment"`
-							ActiveDeployments []struct {
-								ID     string `json:"id"`
-								Status string `json:"status"`
-							} `json:"activeDeployments"`
-						} `json:"node"`
-					} `json:"edges"`
-				}{
-					Edges: []struct {
-						Node struct {
-							ID            string `json:"id"`
-							EnvironmentID string `json:"environmentId"`
-							StartCommand  string `json:"startCommand"`
-							Source        struct {
-								Image string `json:"image"`
-								Repo  string `json:"repo"`
-							} `json:"source"`
-							LatestDeployment *struct {
-								ID                string    `json:"id"`
-								Status            string    `json:"status"`
-								CreatedAt         time.Time `json:"createdAt"`
-								Meta              any       `json:"meta"`
-								DeploymentStopped bool      `json:"deploymentStopped"`
-							} `json:"latestDeployment"`
-							ActiveDeployments []struct {
-								ID     string `json:"id"`
-								Status string `json:"status"`
-							} `json:"activeDeployments"`
-						} `json:"node"`
-					}{
-						{
-							Node: struct {
-								ID            string `json:"id"`
-								EnvironmentID string `json:"environmentId"`
-								StartCommand  string `json:"startCommand"`
-								Source        struct {
-									Image string `json:"image"`
-									Repo  string `json:"repo"`
-								} `json:"source"`
-								LatestDeployment *struct {
-									ID                string    `json:"id"`
-									Status            string    `json:"status"`
-									CreatedAt         time.Time `json:"createdAt"`
-									Meta              any       `json:"meta"`
-									DeploymentStopped bool      `json:"deploymentStopped"`
-								} `json:"latestDeployment"`
-								ActiveDeployments []struct {
-									ID     string `json:"id"`
-									Status string `json:"status"`
-								} `json:"activeDeployments"`
-							}{
-								ID:            "instance-2",
-								EnvironmentID: "env-1",
-								StartCommand:  "go run main.go",
-								Source: struct {
-									Image string `json:"image"`
-									Repo  string `json:"repo"`
-								}{
-									Image: "",
-									Repo:  "github.com/user/repo",
-								},
-								LatestDeployment: nil,
-								ActiveDeployments: []struct {
-									ID     string `json:"id"`
-									Status string `json:"status"`
-								}{},
-							},
-						},
-					},
-				},
+				ServiceInstances: serviceInstances{Edges: []serviceInstanceEdge{{Node: serviceInstanceNode{
+					ID:            "instance-2",
+					EnvironmentID: "env-1",
+					StartCommand:  "go run main.go",
+					Source:        serviceInstanceSource{Repo: "github.com/user/repo"},
+				}}}},
 			},
 			envID: "env-1",
 			want: types.ServiceDetail{
@@ -766,7 +704,6 @@ func TestServiceNodeToServiceDetail(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.node.toServiceDetail(tt.envID)
-
 			if got.ID != tt.want.ID {
 				t.Errorf("ID = %v, want %v", got.ID, tt.want.ID)
 			}
@@ -778,6 +715,21 @@ func TestServiceNodeToServiceDetail(t *testing.T) {
 			}
 			if got.SourceType != tt.want.SourceType {
 				t.Errorf("SourceType = %v, want %v", got.SourceType, tt.want.SourceType)
+			}
+			if got.RestartPolicy != tt.want.RestartPolicy {
+				t.Errorf("RestartPolicy = %v, want %v", got.RestartPolicy, tt.want.RestartPolicy)
+			}
+			if got.MaxRetries != tt.want.MaxRetries {
+				t.Errorf("MaxRetries = %v, want %v", got.MaxRetries, tt.want.MaxRetries)
+			}
+			if got.Replicas != tt.want.Replicas {
+				t.Errorf("Replicas = %v, want %v", got.Replicas, tt.want.Replicas)
+			}
+			if got.HealthcheckPath != tt.want.HealthcheckPath {
+				t.Errorf("HealthcheckPath = %v, want %v", got.HealthcheckPath, tt.want.HealthcheckPath)
+			}
+			if got.HealthcheckTimeout != tt.want.HealthcheckTimeout {
+				t.Errorf("HealthcheckTimeout = %v, want %v", got.HealthcheckTimeout, tt.want.HealthcheckTimeout)
 			}
 		})
 	}

@@ -27,6 +27,7 @@ to match the desired state.
 | `--await`         |       | Wait for deployments to reach terminal status    |
 | `--await-timeout` |       | Timeout in seconds for --await (default: 600)    |
 | `--no-color`      |       | Disable colored output                           |
+| `--color`         |       | Force colored output even when not a terminal (CI) |
 | `--project`       | `-p`  | Project name (overrides config file)             |
 | `--environment`   | `-e`  | Environment name (overrides config file)         |
 
@@ -46,6 +47,7 @@ no changes, 1 if differences exist (useful for CI/CD).
 | `--file`     | `-f`  | Path to YAML config file or directory (required) |
 | `--prune`    |       | Include unmanaged resources in diff              |
 | `--no-color` |       | Disable colored output                           |
+| `--color`    |       | Force colored output even when not a terminal (CI) |
 
 ## Config File Schema
 
@@ -161,6 +163,15 @@ Private Docker registry credentials. Required when `image` references a private 
 | ---------- | ------ | ------- | ---------------------------------------------- |
 | `username` | string | (none)  | Registry username. Supports `$env()` expansion |
 | `password` | string | (none)  | Registry password. Supports `$env()` expansion |
+
+Both `username` and `password` must be set for credentials to be applied.
+
+Railway never returns stored credentials, so `apply` can't diff them — it
+re-applies the declared credentials on any update to the service and shows them
+(password masked) in the diff.
+
+**Removal is not supported:** the API can't clear stored credentials, so removing
+the `registry` block does not remove them from the service — use the dashboard.
 
 ## Variable Expansion
 

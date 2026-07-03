@@ -23,6 +23,7 @@ var (
 	applyAwait        bool
 	applyAwaitTimeout int
 	applyNoColor      bool
+	applyColor        bool
 )
 
 var applyCmd = &cobra.Command{
@@ -66,6 +67,7 @@ func init() {
 	applyCmd.Flags().BoolVar(&applyAwait, "await", false, "Wait for deployments to reach terminal status")
 	applyCmd.Flags().IntVar(&applyAwaitTimeout, "await-timeout", 600, "Timeout in seconds for --await")
 	applyCmd.Flags().BoolVar(&applyNoColor, "no-color", false, "Disable colored output")
+	applyCmd.Flags().BoolVar(&applyColor, "color", false, "Force colored output even when not a terminal (e.g. CI)")
 	_ = applyCmd.MarkFlagRequired("file")
 	rootCmd.AddCommand(applyCmd)
 }
@@ -120,7 +122,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	cs := diff.Compute(cfg.Services, liveServices, applyPrune)
 
 	// Determine color support.
-	useColor := diff.IsColorSupported(os.Stdout) && !applyNoColor
+	useColor := !applyNoColor && (applyColor || diff.IsColorSupported(os.Stdout))
 
 	// 6. If dry-run or no changes, render and exit.
 	if applyDryRun {
@@ -255,12 +257,18 @@ func fetchLiveState(client api.APIClient, projectID, envID string) ([]diff.LiveS
 			Name:  svc.Name,
 			Image: svc.Source,
 			Deploy: diff.LiveDeployConfig{
-				StartCommand: svc.StartCommand,
+				StartCommand:       svc.StartCommand,
+				RestartPolicy:      svc.RestartPolicy,
+				MaxRetries:         svc.MaxRetries,
+				Replicas:           svc.Replicas,
+				HealthcheckPath:    svc.HealthcheckPath,
+				HealthcheckTimeout: svc.HealthcheckTimeout,
 			},
 		}
 
-		// Variables.
-		vars, err := client.GetVariables(projectID, envID, svc.ID)
+		// Variables. Use raw (unrendered) values so ${{...}} references compare
+		// against the config template instead of Railway's resolved value.
+		vars, err := client.GetRawVariables(projectID, envID, svc.ID)
 		if err != nil {
 			return nil, fmt.Errorf("getting variables for service %q: %w", svc.Name, err)
 		}
