@@ -33,7 +33,7 @@ rest is mostly mechanics:
    the reconcile loop. Imperative commands are for inspection, monitoring,
    and surgical exceptions — and **every imperative change must be reconciled
    back into the manifest immediately** (see *Drift discipline*, §5): run
-   `diff`, backport the change, get back to exit 0.
+   `diff`, backport the change, get back to a clean diff (nothing to change).
 3. **Least privilege, immediately.** The moment a project + environment
    exists, mint a **project token** scoped to exactly that pair and do all
    further work with it. Workspace/account tokens are for provisioning and
@@ -264,14 +264,15 @@ change (creates, field-level updates, prune deletions), with secrets masked.
 An apply whose diff you haven't read is an unreviewed change to production.
 
 ```bash
-railctl diff  -f stack.yaml            # READ THIS — exit 1 while anything would change
+railctl diff  -f stack.yaml            # READ THIS — shows everything that would change
 railctl apply -f stack.yaml --await    # create/update + wait for SUCCESS
-railctl diff  -f stack.yaml            # exit 0: live state matches manifest
+railctl diff  -f stack.yaml            # clean: live state matches manifest
 ```
 
-`diff`'s exit code is the CI gate: 0 = in sync, 1 = drift (an expected
-report, not an error — no error styling is printed). Keep this loop closed:
-after ANY imperative change, reconcile (see *Drift discipline*, §5).
+`diff` always exits 0 — read its **output**, not its exit code: a summary of
+"0 to create, 0 to update, 0 to delete" means in sync; any non-zero count is
+drift. A non-zero *exit* now means a real error (bad file, auth, API). Keep
+this loop closed: after ANY imperative change, reconcile (see *Drift discipline*, §5).
 
 **Step 6 — publish.**
 
@@ -465,7 +466,7 @@ manifest. This exact file is live-verified by railctl's example suite:
 # The declarative equivalent of configs/01..04: postgres + redis + n8n primary
 # + n8n workers, one file. Deploy with:
 #
-#   railctl diff  -f stack.yaml           # show what would change (exit != 0 if any)
+#   railctl diff  -f stack.yaml           # show what would change
 #   railctl apply -f stack.yaml           # reconcile live state to this manifest
 #   railctl delete -f stack.yaml --yes    # teardown: delete these services + declared volumes
 #
@@ -591,7 +592,7 @@ ride in via the `registry` block, never in the file:
 # The declarative equivalent of configs/01..04: postgres + temporal server
 # (auto-setup) + web UI + a worker template, one file. Deploy with:
 #
-#   railctl diff  -f stack.yaml     # ALWAYS diff first — exit != 0 while drift exists
+#   railctl diff  -f stack.yaml     # ALWAYS diff first — read what would change
 #   railctl apply -f stack.yaml --await
 #   railctl delete -f stack.yaml --yes   # teardown: declared services + volumes
 #
@@ -702,7 +703,7 @@ removed with `delete domain`, never silently on apply.)
 
 | Command | Does | Exit |
 |---|---|---|
-| `railctl diff -f <file-or-dir> [--prune]` | show create/update/delete deltas, secrets masked | 0 = in sync, 1 = drift |
+| `railctl diff -f <file-or-dir> [--prune]` | show create/update/delete deltas, secrets masked | always 0; read the summary line for drift |
 | `railctl apply -f <file-or-dir> [--await] [--await-timeout N] [--dry-run] [--prune --yes]` | reconcile live state to the manifest | 0 = applied |
 | `railctl delete -f <file-or-dir> [--yes]` | delete exactly the **declared** services (reverse manifest order), then their declared volumes | 0 = done / cancelled |
 
@@ -738,7 +739,7 @@ into the manifest immediately**:
 ```bash
 railctl diff -f stack.yaml       # shows exactly what you changed out-of-band
 $EDITOR stack.yaml               # backport the change (or apply to revert it)
-railctl diff -f stack.yaml       # exit 0 — truth restored
+railctl diff -f stack.yaml       # clean diff — truth restored
 ```
 
 `diff` makes this trivial: it shows the delta field-by-field, so backporting
@@ -905,7 +906,7 @@ Works with any token type; a project token self-mints for its own scope
 | `… not found — available: a, b, c` | Typo — the listed candidates are what exists. |
 | `environment '…' is delete-protected` | `DELETE_PROTECTION` is set — run `railctl unprotect environment <env>` (or set `deleteProtection: false` and `apply`) to allow deletion. |
 | Token works in the dashboard but railctl says unauthorized | Probably project-scoped and the other tool sends `Authorization: Bearer` only; railctl handles the `Project-Access-Token` header automatically — check for typos/whitespace. |
-| `diff` "fails" in CI | Exit 1 means drift, by design (like `git diff --exit-code`): `railctl diff -f stack.yaml \|\| railctl apply -f stack.yaml --await`. |
+| `diff` "fails" in CI | `diff` always exits 0 on drift — a non-zero exit now means a real error (bad file, auth, API); read the message. To gate CI on drift, parse the summary line (`0 to create, 0 to update, 0 to delete`), not the exit code. |
 | Container exits instantly / `startCommand` seems ignored | The image likely has a fixed **ENTRYPOINT**: Railway appends `startCommand` as CMD args and does **not** override the entrypoint, which can silently swallow your command. Use an image with a shell entrypoint or build a thin custom image. |
 | `logs` prints nothing, no error | Logs default to the **latest successful** deployment — if none succeeded yet there is nothing to show. Use `--deployment <id>` (ids from `get deployments`) to read a failed deployment's logs. |
 | Volume/backup op right after creation says not found | Propagation lag; railctl retries with backoff — re-run if it still misses. |
@@ -935,9 +936,8 @@ railctl logs web --tail 50                                 # it's alive
 first even in CI — its output in the job log is the reviewable change record:
 ```bash
 export RAILWAY_TOKEN="$RAILWAY_PROJECT_TOKEN"
-if ! railctl diff -f stack.yaml; then      # prints the pending changes to the log
-  railctl apply -f stack.yaml --await
-fi
+railctl diff -f stack.yaml                 # prints the pending changes to the log
+railctl apply -f stack.yaml --await        # idempotent — a no-op when already in sync
 ```
 
 **Private image end-to-end**: CI builds & pushes `ghcr.io/owner/app:$SHA` →
