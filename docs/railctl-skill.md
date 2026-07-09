@@ -80,7 +80,7 @@ moment they matter:
 | mint a project token, switch to it | "I've set up a safer, limited key that can only touch this one app" |
 | author `stack.yaml` | "I'm writing down your app's setup in one file, so every change is reviewable and repeatable" |
 | `diff` before `apply` | "here's exactly what will change before I touch anything: …" |
-| set `DELETE_PROTECTION` | "I've protected this environment so it can't be deleted by accident" |
+| set `DELETE_PROTECTION` | "I've locked this environment so its data and services can't be deleted by accident — you can still ship, tweak config, and roll back freely" |
 | CI pipeline + pull token | "every push will now build and publish your app automatically — I need one read-only credential from you for the registry" |
 
 **Tool-speak translation** (say the left, run the right): "preview of the
@@ -215,6 +215,11 @@ The raw token goes to **stdout only, once** — capture immediately, store as a
 secret, never echo, never commit. `token list` shows masked values only.
 Rotate by minting a replacement and deleting the old id.
 
+If you run a project-scoped command with a broad account/workspace token,
+railctl prints a one-line **least-privilege hint** to stderr nudging you toward
+a project token (leaf-bound to one project+environment). It's advisory — silence
+it per-run with `RAILCTL_NO_HINTS=1`, or better, switch to the project token.
+
 ---
 
 ## 3. Zero → Hero: the canonical path
@@ -344,6 +349,12 @@ deletion tripwire:
    `customDomains`).
 3. Verify: `railctl delete environment <env> --yes` must refuse with
    `environment '…' is delete-protected` — and so must `delete project`.
+
+Protection is not just about the environment as a whole: while it is armed, the
+environment's **data and structure** are shielded too — `delete service`,
+`delete volume`, `delete backup`, `delete -f`, and `apply --prune` all refuse —
+while updates, creates, and config/rollback deletes (domain, variable,
+deployment) keep working. See §7 for the exact allow/block matrix.
 
 There is **no bypass flag**; the only way to delete is consciously unprotecting
 first (`unprotect environment`, or `deleteProtection: false`) — which is exactly
@@ -693,6 +704,16 @@ An unauthenticated Postgres, Redis, etcd, or internal gRPC service on a
 services in the stack, it gets **no** `networking` block — full stop. When in
 doubt, start internal and add exposure deliberately, one service at a time.
 
+**You do not need to expose a port just to reach it yourself.** The old reason
+people opened a `tcpProxy` — "but I need to connect from my laptop to run a
+migration / open a psql shell / poke the admin API" — is gone: `railctl
+port-forward` tunnels straight into a **private** service over SSH, and
+`railctl exec` opens a shell inside it, both with **no public surface** (see the
+monitoring commands in §6). So a public proxy on an unauthenticated datastore is
+now not just dangerous, it's **unnecessary**: forward to it for admin/debug and
+leave it internal. Reserve `tcpProxy`/`domain` for traffic that genuinely
+originates *outside* Railway (real end users, third-party webhooks).
+
 **Un-exposing is declarative too:** removing a `tcpProxy`/`domain` block and
 re-applying closes the port (`diff` shows `- networking.tcpProxy.port: …`,
 `apply` removes it). So if you inherit an over-exposed stack, delete the
@@ -854,6 +875,89 @@ Deployment statuses: `INITIALIZING → BUILDING → DEPLOYING → SUCCESS`, or
 `create service` does **not** reliably deploy by itself — trigger explicitly
 with `create deployment` when you need a deterministic first deployment.
 
+**When logs aren't enough, go inside.** `logs` is the first-line monitoring
+tool; when you need to *interact* with a running service — open a shell, inspect
+files, run a one-off admin/migration command, or point a local client at an
+internal port — reach for **`railctl exec`** and **`railctl port-forward`**
+(next). They work on **private** services with no public exposure, over
+Railway's SSH relay. One-time prerequisite so it isn't a surprise later:
+register your SSH key **once** at
+[railway.com/account/ssh-keys](https://railway.com/account/ssh-keys) (railctl
+never manages keys); after that, exec/port-forward work with **any** token.
+
+### Exec — shell into a service container (SSH)
+```bash
+railctl exec api -p my-project -e production                  # interactive shell (kubectl-exec style)
+railctl exec api -p my-project -e production -- ls -la /data  # one-off command; exit code propagated
+railctl exec api ... -i ~/.ssh/id_ed25519 -- env             # use a specific private key
+railctl exec api ... --deployment-instance <id> -- <cmd>     # target a specific instance id
+```
+The service is a **positional argument** (like `logs <service>`, not `-s`);
+everything after `--` is the remote command, passed verbatim (omit it for an
+interactive shell). railctl shells out to your **local `ssh` binary** and dials
+Railway's global relay (`ssh.railway.com`), which brokers the session into the
+container docker-exec style — **the container needs NO sshd of its own**, but
+you DO need a local `ssh` binary and an SSH key. **railctl does not manage SSH
+keys** — register your key **once** at
+[railway.com/account/ssh-keys](https://railway.com/account/ssh-keys); ssh then
+authenticates with it (agent / `~/.ssh` defaults, or the `-i` override).
+**Token scope: exec works with ANY token — account, workspace, OR project.** The
+token is used only to resolve the service instance; authentication is by your
+SSH key, not the token. If ssh fails with a publickey/permission error, register
+your key at the URL above and retry. See the design in
+`docs/designs/2026-07-09-railctl-exec-port-forward.md`.
+
+### Port-forward — reach a service's ports over SSH (incl. private services)
+```bash
+railctl port-forward db 5432 -p my-project -e production            # localhost:5432 -> db's own 127.0.0.1:5432
+railctl port-forward kube-apiserver 6443 -p my-project -e production # reach a PRIVATE service directly (no public exposure)
+railctl port-forward db 6543:5432 -p my-project -e production       # map a different local port
+railctl port-forward db 5432 6379 -p my-project -e production       # multiple ports, ONE ssh connection
+railctl port-forward db 5432 --address 0.0.0.0 -i ~/.ssh/id_ed25519 # share on the LAN + specific key
+```
+kubectl-`port-forward`-style local forwarding over Railway's SSH relay. The
+service is a **positional argument**; every bare positional after it is a port
+spec (multiple `-L` forwards ride **one** ssh connection). It runs in the
+**foreground** and streams until **Ctrl-C**. Same transport and token model as
+`exec` (local `ssh` binary, your pre-registered SSH key, no sshd in the
+container; works with any token).
+
+**Reaching a private service — you forward directly INTO it.** This is kubectl's
+actual model (`kubectl port-forward pod` targets the pod itself, not a bastion).
+Name the private service — it works with no public domain/proxy:
+```bash
+railctl port-forward kube-apiserver 6443    # then: kubectl --server https://127.0.0.1:6443 …
+```
+There is **no jump/bastion form** — verified live, Railway's relay forwards
+only to the *target container's own loopback*, not to other hosts through it.
+
+**Port-spec grammar:**
+
+| Form | Emits | Meaning |
+|---|---|---|
+| `REMOTE` (e.g. `8080`) | `-L 127.0.0.1:8080:127.0.0.1:8080` | local == remote |
+| `LOCAL:REMOTE` (e.g. `6543:5432`) | `-L 127.0.0.1:6543:127.0.0.1:5432` | map a different local port |
+
+The remote side is always the service's own loopback (`127.0.0.1`); a bare
+number can never smuggle `localhost` (which resolves to an unreachable mesh
+address). A three-field `LOCAL:HOST:REMOTE` spec is rejected.
+
+> ⚠️ **The target must listen on IPv4 (verified live).** The forward lands on
+> the service's `127.0.0.1`, so the service must bind IPv4 loopback or
+> `0.0.0.0`. A service that binds **IPv6-only** (`[::]`) is not reachable this
+> way — the `-L` to `127.0.0.1` finds nothing (an "empty reply"). Most servers
+> (Postgres, Redis, kube-apiserver with `--bind-address 0.0.0.0`) bind IPv4;
+> ensure yours does if you need to forward to it.
+
+**Token scope: port-forward works with ANY token — account, workspace, OR
+project** (same model as `exec`: the token only resolves the instance;
+authentication is by your **pre-registered SSH key**, which you register once at
+[railway.com/account/ssh-keys](https://railway.com/account/ssh-keys) — railctl
+does not manage keys). Flags: `-i/--identity-file`, `--deployment-instance
+<id>`, `--address` (local bind, default `127.0.0.1`; `0.0.0.0` to share on the
+LAN). See the design in
+`docs/designs/2026-07-09-railctl-exec-port-forward.md`.
+
 ### Domains
 ```bash
 railctl get domains -s api                    # railway + custom, verification status
@@ -874,16 +978,29 @@ Works with any token type; a project token self-mints for its own scope
 
 ## 7. Danger zone — deletion semantics & protection
 
-- **`DELETE_PROTECTION`**: an environment whose shared (environment-level)
-  variable `DELETE_PROTECTION` is truthy (`true`/`1`/`yes`/`on`,
-  case-insensitive) cannot be deleted, nor can its project — railctl refuses
-  with **no bypass flag** (`--yes` skips prompts, never protection); unprotect
-  to allow. Unreadable protection state → deletion refused (fail-closed). Arm it
-  on every environment you care about — imperatively with
+- **`DELETE_PROTECTION` — what a protected environment actually means.** An
+  environment whose shared (environment-level) variable `DELETE_PROTECTION` is
+  truthy (`true`/`1`/`yes`/`on`, case-insensitive) is a **read-mostly, no-delete
+  zone**: it protects **data and structure** while leaving day-to-day operation
+  fully open. Concretely, in a protected environment:
+  - **Blocked** (its data + structure are shielded): deleting the **environment**
+    itself or its **project**, and deleting a **service**, **volume**, or
+    **backup** — including `delete -f` (teardown) and `apply --prune` (which
+    deletes services). railctl refuses with **no bypass flag** (`--yes` skips
+    prompts, never protection); the message names the resource and points at
+    `unprotect environment <env>`.
+  - **Allowed** (configuration + operational, nothing destroyed irreversibly):
+    every **update** and **create**, plus deleting a **domain**, a **variable**,
+    or a **deployment** (a rollback). You keep shipping, tweaking config, and
+    rolling back at full speed; you just can't tear down the data or the
+    services holding it.
+  - Unreadable protection state → the delete is refused (fail-closed).
+  Arm it on every environment you care about — imperatively with
   `railctl protect environment <env>` (undo: `unprotect environment <env>`), or
   declaratively with the top-level `deleteProtection: true` manifest field
   (`false` clears it; **omitting it leaves the live state alone** — a dropped
-  line never silently unprotects).
+  line never silently unprotects). `apply --prune` checks **live** protection,
+  so unprotect first (or in a prior apply) to prune a protected environment.
 - `delete project` also refuses while the project still has services —
   delete them (or `delete -f` the manifest) first.
 - Deleting an **environment** destroys its variable values, volume instances,

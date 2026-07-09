@@ -41,6 +41,9 @@ type MockClient struct {
 	RemoveDeploymentFunc  func(deploymentID string) error
 	GetDeploymentLogsFunc func(deploymentID string, limit int) ([]LogEntry, error)
 
+	// SSH exec / port-forward
+	GetServiceInstanceIDFunc func(environmentID, serviceID string) (string, error)
+
 	// Domains
 	ListDomainsFunc             func(projectID, environmentID, serviceID string) (DomainList, error)
 	CreateServiceDomainFunc     func(serviceID, environmentID string, targetPort int) (ServiceDomain, error)
@@ -319,6 +322,13 @@ func (m *MockClient) GetDeploymentLogs(deploymentID string, limit int) ([]LogEnt
 		return m.GetDeploymentLogsFunc(deploymentID, limit)
 	}
 	return nil, nil
+}
+
+func (m *MockClient) GetServiceInstanceID(environmentID, serviceID string) (string, error) {
+	if m.GetServiceInstanceIDFunc != nil {
+		return m.GetServiceInstanceIDFunc(environmentID, serviceID)
+	}
+	return "", nil
 }
 
 func (m *MockClient) ListVolumes(projectID, environmentID string) ([]VolumeInstance, error) {
