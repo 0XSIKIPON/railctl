@@ -399,10 +399,9 @@ formats stay machine-readable: listings emit `[]` on empty, never prose.
 # stack.yaml — one file, the whole environment
 project: my-app # optional; -p / env var / token scope override
 environment: production # optional; same
-deleteProtection:
-  true # optional; ensures DELETE_PROTECTION on this env.
-  # false clears it; OMITTING leaves live state alone
-  # (a dropped line never silently unprotects).
+deleteProtection: true # optional; ensures DELETE_PROTECTION on this env.
+# false clears it; OMITTING leaves live state alone
+# (a dropped line never silently unprotects).
 
 services:
   - name: api
