@@ -399,10 +399,9 @@ formats stay machine-readable: listings emit `[]` on empty, never prose.
 # stack.yaml — one file, the whole environment
 project: my-app # optional; -p / env var / token scope override
 environment: production # optional; same
-deleteProtection:
-  true # optional; ensures DELETE_PROTECTION on this env.
-  # false clears it; OMITTING leaves live state alone
-  # (a dropped line never silently unprotects).
+deleteProtection: true # optional; ensures DELETE_PROTECTION on this env.
+# false clears it; OMITTING leaves live state alone
+# (a dropped line never silently unprotects).
 
 services:
   - name: api
@@ -458,10 +457,12 @@ port, or URL. This is a standing directive, not a style preference:
 So prefer:
 
 ```yaml
-variables:
-  DATABASE_URL: "${{db.DATABASE_URL}}"
-  REDIS_HOST: "${{redis.RAILWAY_PRIVATE_DOMAIN}}"
-  API_URL: "https://${{api.RAILWAY_PRIVATE_DOMAIN}}"
+services:
+  - name: api
+    variables:
+      DATABASE_URL: "${{db.DATABASE_URL}}"
+      REDIS_HOST: "${{redis.RAILWAY_PRIVATE_DOMAIN}}"
+      API_URL: "https://${{api.RAILWAY_PRIVATE_DOMAIN}}"
 ```
 
 over any form that bakes in `db.internal`, a fixed port, or a full literal URL.
